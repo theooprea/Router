@@ -1,0 +1,126 @@
+Router - PC - Oprea_Theodor-Alin
+time to implement: 25-30h
+
+For testing use:
+sudo fuser -k 6653/tcp
+sudo python3 topo.py
+
+And inside terminals, use ./router rtable0.txt rr-0-1 r-0 r-1 for router 0 and
+./router rtable1.txt rr-0-1 r-0 r-1 for router 1
+
+I keep the router table entries in a binary tree of at most 32 levels (one for
+each bit an address has) in a big endian order, to be easier to keep track of
+the mask. Basically, I insert each entry n levels deep into the tree, where n
+is the number of relevant bits, for example, if the mask of the entry is
+255.255.255.0, that entry will be inserted of the 24th depth level, while
+255.255.255.255 will lead the entry to be stored on the 32nd depth level. I
+keep the entries in a big endian order because it's easier to acount for the
+mask, for example, if I have an entry with a 192.168.0.1 prefix and a 255.255.
+255.0 mask, only the first 24 bits of the prefix will be relevant, so the big
+endianess solves a difficult search (if i were to keep it in little endian, I
+would have had to search for the last 24 bits, which is counter-intuitive in a
+tree). Each node in the tree has a list of possible entries, for example, one
+entry with 192.168.0.1 prefix and 255.255.255.0 and another with 192.168.0.2
+prefix with 255.255.255.0, will be kept in the same node's list (only the first
+24 bits are relevant, which are the same for the 2 entries). Thus, the search
+complexity will be O(32) => approximately O(1).
+
+The logic of the router is as follows: it reads the routing table, initializes
+the routing entries tree and start the event loop, which does the following:
+
+1. Wait for a package to be recieved.
+2. If the package is IP, ICMP ECHO request type, destined for the router, send
+and echo reply and drop the package.
+3. If the package is an ARP request, destined for the router, send an ARP reply
+with the coresponding MAC address.
+4. If the package is an ARP reply, extract the arp header and use the spa and
+the sha fields to update the arp table, spa as the ip and the sha as the MAC
+address. We iterate through the package queue in order to find all possible
+packages meant for the souce of the ARP reply package. Keep dequeing packages
+from the queue, if it is meant for the ARP reply source, send it, if it is not,
+we add it into a secondary queue, which will be emptied into the original
+queue. This asures us that if we have multiple machines sending packages to
+our router in the same time (like most routers work), we won't have leftover
+packages meant for a station that will always remain in the back of our queue.
+5. If the package's TTL is less or equal to 1, it means that the package has
+excedeed it's time to leave, so send an ICMP Time Excedeed package back to it's
+source.
+6. Check the checksum of the package, if it is different to 0, drop the package
+7. Decrement the TTL (it has travelled one more hop) and update the checksum of
+the package.
+8. Search for the best possbile route to send the package to by searching for
+the best match in the routing tree. Basically, find the closest match for the
+package's destination ip, considering the mask of each possible route (take
+into consideration only the first n relevant bits, n being the length of the
+1 bits sequence in the mask). If there is no such route found, then there is no
+way for the package to reach the destination and we send an adequate ICMP
+Destination Unreachable message to the source.
+9. Search for the destination's next address in our dinamically allocated arp
+table. If we find such an entry, swap the destination MAC address from the
+ether_header with the MAC we found in the arp_table and the source MAC address
+with the MAC address of the router interface through which we will send the
+message through (interface found in the routing table). If we don't find such
+and entry, we send a broadcast ARP request to the route's next_hop, which will
+help us find the desired MAC address and forward it.
+10. Perhaps the simplest step, just sending the packet forward into the network
+
+Auxiliary functions:
+
+read_table => function to parse the route table.
+
+add_in_tree => function to recursively add a route entry in the routing tree,
+at each step considering the current bit, if it is a 1 move to the right, if it
+is a 0, move to the left, untill we reach the last relevant bit (considering
+the mask).
+
+n_th_bit => auxiliary function to find the n'th bit of an ip address, used in
+add_in_tree.
+
+number_of_relevant_bits => auxiliary function that computes the number of 1
+bits of an ip address, used in add_in_tree to find out at what level I should
+stop and add the entry in the node's list.
+
+print_tree => debugging function to print the tree with each node's routing
+entries
+
+free_tree => used to free the memory used for the tree.
+
+rtable_get_best_match => function used to determine the path a package should
+follow, considering only the bits imposed by the mask (destination & mask ==
+prefix). The function moves in the tree recursively, cosidering the current
+bit, as well as if there may be a match in the current node's entry list. The
+function returns the best entry match as a collateral effect in order to be
+easier to find the largest mask and the closest match (more relevant bits => a
+better destination - prefix match) since the bigger masks are found at the
+deepest levels of the tree.
+
+is_destined_for_router => function to determine wether the package's
+destination ip address is one of the router's interfaces' addresses. It
+iterates through all of the router's interfaces and checks whether the current
+interface's address matches the destination ip, if it finds such a match,
+returns 1, 0 otherwise.
+
+get_arp_entry => function from the forwarding lab that finds an arp match for
+a given ip address. It iterates through the arp table and upon a match it
+returns that entry, or NULL if no match is found.
+
+Notable things:
+
+- For parsing the tables I am using strtok (found it easier to control how the
+addresses are made).
+- User the lab funtion to search in the arp_table (just an iteration and match)
+
+Sources:
+
+For the event loop I followed the assignment's instructions to the letter, the
+order of the event handling in the event loop is the same as described in the
+assignment paper.
+
+For the forward protocol I used the instructions in the Forwarding Lab (4th
+Lab), modified the best route entry to work in O(1), as well as implemented my
+own parsing function, but I mostly kept the function names unchanged, as well
+as used the structures in the Lab.
+
+For the ICMP protocol I used the values learnt in the ICMP Lab (the 5th Lab)
+
+For the Arp protocol I used documentation found online (RFC 826)
